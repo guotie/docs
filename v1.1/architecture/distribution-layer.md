@@ -12,12 +12,12 @@ The Distribution Layer of CockroachDB's architecture provides a unified view of 
 
 ## Overview
 
-To make all data in your cluster accessible from any node, CockroachDB stores data in a monolithic sorted map of key-value pairs. This keyspace describes all of the data in your cluster, as well as its location, and is divided into what we call "ranges", contiguous chunks of the keyspace, so that every key can always be found in a single range.
+To make all data in your cluster accessible from any node, CockroachDB organizes your cluster's data in a monolithic sorted map of key-value pairs. This keyspace describes all of your data and is broken into small range sizes and then replicated among the nodes in your cluster, with accounting done to track all of a range's replicas physical locations (i.e., nodes).
 
-CockroachDB implements an sorted map to enable:
+By using a sorted (rather than hashed) map, CockroachDB enables:
 
-  - **Simple lookups**: Because we identify which nodes are responsible for certain portions of the data, queries are able to quickly locate where to find the data they want.
-  - **Efficient scans**: By defining the order of data, it's easy to find data within a particular range during a scan.
+  - **Efficient scans**: By ordering data, scanning over ranges of data is both simple and fast.
+  - **Lookups with less overhead**: Rather than maintaining the location of a range's replicas for *every* key, we naturally track them together and only once.
 
 ### Monolithic Sorted Map Structure
 
@@ -28,13 +28,18 @@ The monolithic sorted map is comprised of two fundamental elements:
 
 #### Meta Ranges
 
-The locations of all ranges in your cluster are stored in a two-level index at the beginning of your key-space, known as meta ranges, where the first level (`meta1`) addresses the second, and the second (`meta2`) addresses data in the cluster. Importantly, every node has information on where to locate the `meta1` range (known as its Range Descriptor, detailed below), and the range is never split.
+The locations of all ranges in your cluster are stored in a two-level index at the beginning of your keyspace, known as *meta ranges*, which are split into two levels:
+
+- The first level (`meta1`) is a single range that has a keyspace representing all data in the cluster. Its individual keys represent larger ranges of your cluster's keys, and their values are the addresses of the replicas of the second-level meta ranges responsible for those keys.
+- The second level (`meta2`) represents the keyspace more granularly, and contains the addresses of the replicas responsible for individual keys. However, because this set of data is likely much larger than a single range, it is distributed among many ranges (and therefor many nodes), which is why its addresses must be tracked by `meta1`.
+
+To make this work, every node has information on where to locate the `meta1` range (known as its Range Descriptor, detailed below), and the range is never split.
 
 This meta range structure lets us address up to 4EB of user data by default: we can address 2^(18 + 18) = 2^36 ranges; each range addresses 2^26 B, and altogether we address 2^(36+26) B = 2^62 B = 4EB. However, with larger range sizes, it's possible to expand this capacity even further.
 
-Meta ranges are treated mostly like normal ranges and are accessed and replicated just like other elements of your cluster's KV data. 
+Meta ranges are treated mostly like normal ranges and are accessed and replicated just like other elements of your cluster's KV data.
 
-Each node caches values of the `meta2` range it has accessed before, which optimizes access of that data in the future. Whenever a node discovers that its `meta2` cache is invalid for a specific key, the cache is updated by performing a regular read on the `meta2` range.
+Nodes also cache values of the `meta2` range it has accessed before, which optimizes access of that data in the future. Whenever a node discovers that its `meta2` cache is invalid for a specific key, the cache is updated by performing a regular read on the `meta2` range.
 
 #### Table Data
 
@@ -52,6 +57,15 @@ These meta ranges are heavily cached, so this is normally handled without having
 
 The node then sends those KV operations to the Leaseholder identified in the `meta2` range. However, it's possible that the data moved, in which case the node that no longer has the information replies to the requesting node where it's now located. In this case we go back to the `meta2` range to get more up-to-date information and try again.
 
+#### Example
+
+For a client to read the key `12345`, it would go through this process:
+
+1. The node responsible for the request (known as the Gateway) uses its local data to find out where `meta1` is located and sends its request to it.
+2. `meta1` accesses its key representing keys in your cluster between `10000` and `19999`, and returns its value: the address of the node containing the `meta2` range responsible for keys between `10000` and `19999`.
+3. The Gateway sends the request to this node, which looks up the value for its key representing the keyspace between `12000` and `12999`, and responds with its value: the address of the replicas of the range containing keys between `12000` and `12999`.
+4. Lastly, the node containing the data processes the request.
+
 ### Interactions with Other Layers
 
 In relationship to other layers in CockroachDB, the Distribution Layer:
@@ -63,21 +77,19 @@ In relationship to other layers in CockroachDB, the Distribution Layer:
 
 ### gRPC
 
-gRPC is the software nodes use to communicate with one another. Because the Distribution Layer is the first layer to communicate with other nodes, CockroachDB implements gRPC here.
+Nodes communication through one another using gRPC, which lets them both send and receive protocol buffers ([protobuf](https://en.wikipedia.org/wiki/Protocol_Buffers)). To leverage gRPC, CockroachDB implements a protocol-buffer-based API defined in `api.proto`.
 
-gRPC requires inputs and outputs to be formatted as protocol buffers (protobufs). To leverage gRPC, CockroachDB implements a protocol-buffer-based API defined in `api.proto`.
-
-For more information about gRPC, see the [official gRPC documentation](http://www.grpc.io/docs/guides/). 
+For more information about gRPC, see the [official gRPC documentation](http://www.grpc.io/docs/guides/).
 
 ### BatchRequest
 
-All KV operation requests are bundled into a [protobuf](https://en.wikipedia.org/wiki/Protocol_Buffers), known as a `BatchRequest`. The destination of this batch is identified in the `BatchRequest` header, as well as a pointer to the request's transaction record. (On the other side, when a node is replying to a `BatchRequest`, it uses a protobuf––`BatchResponse`.)
+To send KV operations between nodes, the `TxnCoordSender` bundles them into a protobuf known as a `BatchRequest`. Each `BatchRequest` includes its destination, as well as a pointer to the request's Transaction Record. (On the other side, when a node is replying to a `BatchRequest`, it uses a protobuf––`BatchResponse`.)
 
-This `BatchRequest` is also what's used to send requests between nodes using gRPC, which accepts and sends protocol buffers.
+Because this is inter-node communication, `BatchRequest`s and `BatchResponse`s leverage gRPC.
 
 ### DistSender
 
-The gateway/coordinating node's `DistSender` receives `BatchRequest`s from its own `TxnCoordSender`. `DistSender` is then responsible for breaking up `BatchRequests` and routing a new set of `BatchRequests` to the nodes it identifies contain the data using its `meta2` ranges.  It will use the cache to send the request to the Leaseholder, but it's also prepared to try the other replicas, in order of "proximity". The replica that the cache says is the Leaseholder is simply moved to the front of the list of replicas to be tried and then an RPC is sent to all of them, in order.
+The Gateway Node's `DistSender` receives `BatchRequest`s from its own `TxnCoordSender`. `DistSender` is then responsible for breaking up `BatchRequest`s and routing a new set of `BatchRequest`s to the nodes it identifies contain the data using its `meta2` ranges.  It will use the cache to send the request to the Leaseholder, but it's also prepared to try the other replicas, in order of "proximity". The replica that the cache says is the Leaseholder is simply moved to the front of the list of replicas to be tried and then an RPC is sent to all of them, in order.
 
 Requests received by a non-Leaseholder fail with an error pointing at the replica's last known Leaseholder. These requests are retried transparently with the updated lease by the gateway node and never reach the client.
 

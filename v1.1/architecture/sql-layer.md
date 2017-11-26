@@ -40,7 +40,7 @@ Importantly, through the SQL API, we also let developers use ACID-semantic trans
 
 ### PostgreSQL Wire Protocol
 
-SQL queries reach your cluster through the PostgreSQL wire protocol. This makes connecting your application to the cluster simple by supporting most PostgreSQL-compatible drivers, as well as many PostgreSQL ORMs, such as GORM (Go) and Hibernate (Java).
+SQL queries reach your cluster through the PostgreSQL wire protocol. This makes connecting your application to the cluster simple by supporting most PostgreSQL-compatible drivers, as well as many PostgreSQL ORMs, such as [GORM (Go)](../build-a-go-app-with-cockroachdb-gorm.html) and [Hibernate (Java)](../build-a-java-app-with-cockroachdb-hibernate.html).
 
 ### SQL Parser, Planner, Executor
 
@@ -48,29 +48,28 @@ After your node ultimately receives a SQL request from a client, CockroachDB par
 
 #### Parsing
 
-Received queries are parsed against our `yacc` file (which describes our supported syntax), and converts the string version of each query into [Abstract Syntax Trees](https://en.wikipedia.org/wiki/Abstract_syntax_tree) (AST).
+Received queries are parsed against our `yacc` file (which describes our supported syntax), and converts the string version of each query into an [Abstract Syntax Tree](https://en.wikipedia.org/wiki/Abstract_syntax_tree) (AST).
 
 #### Planning
 
-With the AST, CockroachDB begins planning the query's execution by generating a tree of `planNodes`. Each of the `planNodes` contain a set of code that uses KV operations; this is ultimately how SQL statements are converted into KV operations.
+CockroachDB then uses the AST version of the query to generate a tree of `planNodes`. Each `planNode` contains the  CRUD-type operations from the SQL statement in a way that lower levels of CockroachDB can understand, i.e., as key-value operations. You can see the `planNodes` a query generates using [`EXPLAIN`](../explain.html).
 
-This step also includes steps analyzing the client's SQL statements against the expected AST expressions, which include things like type checking.
-
-You can see the `planNodes` a query generates using [`EXPLAIN`](../explain.html).
+Planning also includes steps to analyze the SQL statements against the expected AST expressions, including operations like type checking.
 
 #### Executing
 
-`planNodes` are then executed, which begins by communicating with the Transaction Layer.
+The key-value operations in the `planNodes` are then executed, which begins by communicating with the Transaction Layer.
 
-This step also includes encoding values from your statements, as well as decoding values returned from lower layers.
+As operations execute, their values are also encoded. On the opposite side, as the results of queries return, they are decoded in this step.
 
 ### Encoding
 
-Though SQL queries are written in parsable strings, lower layers of CockroachDB deal primarily in bytes. This means at the SQL layer, in query execution, CockroachDB must convert row data from their SQL representation as strings into bytes, and convert bytes returned from lower layers into SQL data that can be passed back to the client.
+Because lower layers of CockroachDB deal primarily in bytes, SQL queries must have values (originally represented as strings when sent by the client) encoded, i.e., converted into bytes. And, on the other side, bytes in response to queries must be decoded into strings which can be returned to the client.
 
-It's also important––for indexed columns––that this byte encoding preserve the same sort order as the data type it represents. This is because of the way CockroachDB ultimately stores data in a sorted key-value map; storing bytes in the same order as the data it represents lets us efficiently scan KV data.
+To achieve this, CockroachDB uses two types of encoding:
 
-However, for non-indexed columns (e.g., non-`PRIMARY KEY` columns), CockroachDB instead uses an encoding (known as "value encoding") which consumes less space but does not preserve ordering.
+- **Order-preserving** for indexed columns, which maintain the same sort order as the data it represents
+- **Value encoding** for *non*-indexed columns, which *does not* maintain its order but *does* consume less space
 
 You can find more exhaustive detail in the [Encoding Tech Note](https://github.com/cockroachdb/cockroach/blob/master/docs/tech-notes/encoding.md).
 
