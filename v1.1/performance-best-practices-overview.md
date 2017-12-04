@@ -135,11 +135,11 @@ To create the most useful secondary indexes, check out our [best practices](inde
 
 CockroachDB supports both [merge joins](https://en.wikipedia.org/wiki/Sort-merge_join) and [hash joins](https://en.wikipedia.org/wiki/Hash_join). While performing the [`JOIN`](table-expressions.html#join-expressions) operation, CockroachDB uses the merge join instead of the hash join whenever possible, because merge joins are computationally and memory-wise better performant than hash joins. 
 
-#### Why are merge joins faster than hash joins
+#### Why are merge joins faster than hash joins?
 
 Merge joins are performed on the indexed columns of two tables: CockroachDB takes one row from each table, compares them, and returns the rows if they are equal. If the rows are not equal, CockroachDB discards the lower-value row and the repeats the process with the next row, till all rows are processed. Merge join is a fast operation that doesn’t require additional memory. On the other hand, while performing hash joins on two tables, CockroachDB first creates an in-memory hash table on the smaller table. It then uses the hash table and scans the larger table to find matching rows from the smaller table. This process is computationally expensive and requires additional memory. Hence, whenever possible, CockroachDB uses the faster merge joins instead of hash joins.
 
-#### Why create indexes to perform merge joins
+#### Why create indexes to perform merge joins?
 
 Merge joins requires both tables to be indexed on the merge columns. In case this condition is not met, CockroachDB resorts to the slower hash joins. So while using `JOIN` on two tables, first create indexes on the tables and then use the `JOIN` operator.
 
