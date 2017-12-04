@@ -8,7 +8,7 @@ This page lists the SQL performance best practices for CockroachDB.
 
 <div id="toc"></div>
 
-## Multi-Row DML Best Practices
+## Multi-row DML Best Practices
 
 ### Use Multi-Row DML instead of Multiple Single-Row DMLs
 
@@ -24,6 +24,10 @@ For more information, see:
 ### Use `IMPORT` instead of `INSERT` for Transaction Size greater than 100,000
 
 The current implementation of CockroachDB limits the size of a transaction to 100,000 write intents. What this means is, if your schema has all the tables in one column family, then you can insert a maximum of 100,000 rows in one transaction; if you have 2 column families, that’s a maximum of 50000 rows, and so on.
+
+### Use `IMPORT` instead of `INSERT` for Transaction Size greater than 100,000
+
+The current implementation of CockroachDB limits the size of a transaction to 100,000 write intents. What this means is, if your schema has all the tables in one column family, then you can insert a maximum of 100000 rows in one transaction; if you have 2 column families, that’s a maximum of 50000 rows, and so on.
 
 To insert more than 100,000 rows at a time, use the (experimental) [`IMPORT`](import.html) statement instead of multi-row `INSERT` statement. 
 
@@ -152,6 +156,7 @@ Useful indexes improve performance, whereas unused indexes slow the execution of
 ## Table Scans Best Practices
 
 ### Avoid `SELECT *` for Large Tables
+
 For large tables, avoid table scans (that is, reading the entire table data) whenever possible. Instead, define the required fields in the `SELECT` statement.
 
 #### Example
